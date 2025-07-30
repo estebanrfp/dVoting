@@ -1,6 +1,6 @@
-import { GraphDB } from "https://cdn.jsdelivr.net/npm/gdb-p2p/+esm";
+import { GDB } from "https://cdn.jsdelivr.net/npm/gdb-p2p/+esm";
 
-const db = new GraphDB("voting-app-v10-db"); // Incremented DB name for testing
+const db = new GDB("voting-app-v10-db"); // Incremented DB name for testing
 
 const creatorView = document.getElementById("creatorView");
 const pollNameInput = document.getElementById("pollNameInput");
