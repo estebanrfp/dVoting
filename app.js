@@ -1,4 +1,4 @@
-import { GDB } from "https://cdn.jsdelivr.net/npm/gdb-p2p/+esm";
+import { GDB } from "https://cdn.jsdelivr.net/npm/genosdb/+esm";
 
 const db = new GDB("voting-app-v10-db"); // Incremented DB name for testing
 
