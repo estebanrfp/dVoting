@@ -1,8 +1,8 @@
-# P2P Real-time Voting App (dVoting)
+# GenosDB P2P Real-time Voting App (dVoting)
 
 ![dVoting App Screenshot](https://i.imgur.com/ERP8CAk.png) <!-- Replace placeholder.png with an actual screenshot -->
 
-This is a minimalist, responsive, real-time peer-to-peer (P2P) voting application built entirely in a single HTML file, showcasing the capabilities of [gdb-p2p](https://github.com/estebanrfp/gdb), a minimalist graph database with P2P support.
+This is a minimalist, responsive, real-time peer-to-peer (P2P) voting application built entirely in a single HTML file, showcasing the capabilities of [genosdb](https://github.com/estebanrfp/gdb), a minimalist graph database with P2P support.
 
 **Live Demo:** [https://estebanrfp.github.io/dVoting/]
 
@@ -16,18 +16,18 @@ The goal is to create a decentralized voting system where users can:
 5.  **See results update instantly** across all connected peers.
 6.  **Delete polls** they've created (or manage them if extended with ownership).
 
-All of this happens without a central server, leveraging the P2P nature of `gdb-p2p` for data storage and synchronization (though full P2P sync between different browser instances/devices requires explicit peer configuration not implemented in this basic demo).
+All of this happens without a central server, leveraging the P2P nature of `genosdb` for data storage and synchronization (though full P2P sync between different browser instances/devices requires explicit peer configuration not implemented in this basic demo).
 
-## ✨ Advantages of GraphDB (`gdb-p2p`) Showcased
+## ✨ Advantages of GenosDB (`genosdb`) Showcased
 
-This application demonstrates several key advantages of using `gdb-p2p`:
+This application demonstrates several key advantages of using `genosdb`:
 
 1.  **Decentralization & P2P:**
-    *   The app can function without a central server. Data for polls (Voting Sessions) and their Proposals are stored and potentially synchronized peer-to-peer. While this example primarily uses the local browser storage (IndexedDB via `gdb-p2p`), the underlying database is designed for P2P.
+    *   The app can function without a central server. Data for polls (Voting Sessions) and their Proposals are stored and potentially synchronized peer-to-peer. While this example primarily uses the local browser storage (IndexedDB via `genosdb`), the underlying database is designed for P2P.
     *   **Impact:** Reduces reliance on single points of failure and control, potentially increasing censorship resistance and data ownership.
 
 2.  **Real-time Querying & Updates:**
-    *   `gdb-p2p`'s `.map()` method with a callback function allows the app to listen for changes in the database in real-time.
+    *   `genosdb`'s `.map()` method with a callback function allows the app to listen for changes in the database in real-time.
     *   **Impact:**
         *   **Live Vote Counts:** When a user votes, the `votes` count on a `Proposal` node is updated. All other connected clients subscribed to that poll's proposals see the vote count change instantly without needing to refresh.
         *   **Dynamic Active Polls List:** The sidebar listing active polls updates automatically as new polls are created or existing ones end/are deleted.
@@ -37,7 +37,7 @@ This application demonstrates several key advantages of using `gdb-p2p`:
     *   Data is naturally represented as nodes and (implicit) relationships:
         *   `VotingSession` nodes: Store poll name, end time, status.
         *   `Proposal` nodes: Store proposal titles and vote counts, linked to a `VotingSession` via a `sessionId` property.
-    *   **Impact:** While `gdb-p2p` is "minimalist" and doesn't enforce explicit link/edge nodes in its core API for this example, the concept of connected data is inherent. Querying proposals *for a specific session* (`query: { type: "proposal", sessionId: "XYZ" }`) is straightforward.
+    *   **Impact:** While `genosdb` is "minimalist" and doesn't enforce explicit link/edge nodes in its core API for this example, the concept of connected data is inherent. Querying proposals *for a specific session* (`query: { type: "proposal", sessionId: "XYZ" }`) is straightforward.
 
 4.  **Ease of Use & Rapid Development:**
     *   The API (`put`, `get`, `map`, `remove`) is concise and easy to understand.
@@ -79,20 +79,20 @@ This application demonstrates several key advantages of using `gdb-p2p`:
     *   Voting view uses a sidebar and main content area, stacking on mobile.
 *   **Client-Side Logic:**
     *   The entire application runs in the browser in a single HTML file.
-    *   Data persistence through `gdb-p2p` (IndexedDB).
+    *   Data persistence through `genosdb` (IndexedDB).
 
 ## 🛠️ Tech Stack
 
 *   **HTML5**
 *   **CSS3** (including CSS Grid for layout)
 *   **JavaScript (ES Modules)**
-*   **[gdb-p2p](https://github.com/estebanrfp/gdb)**: The star of the show! Minimalist Graph Database with P2P support and real-time querying.
+*   **[genosdb](https://github.com/estebanrfp/gdb)**: The star of the show! Minimalist Graph Database with P2P support and real-time querying.
 
 ## ⚙️ How it Works (Simplified)
 
 1.  **Poll Creation:**
     *   User inputs poll details.
-    *   A `votingSession` node is created in `gdb-p2p` with a unique ID, name, end time, and `status: "active"`.
+    *   A `votingSession` node is created in `genosdb` with a unique ID, name, end time, and `status: "active"`.
     *   For each proposal option, a `proposal` node is created, linked to the `votingSession` via its `sessionId`.
 2.  **Sharing:**
     *   The URL hash (`#sessionId`) is used to share and load specific polls.
@@ -106,7 +106,7 @@ This application demonstrates several key advantages of using `gdb-p2p`:
         *   All subscribed clients see the vote count update.
 4.  **Poll Ending:**
     *   Client-side countdowns manage the timing.
-    *   When a poll's `endTime` is reached, its `status` in the `gdb-p2p` database is updated to `"ended"`. This change is picked up by other clients, disabling voting and showing results.
+    *   When a poll's `endTime` is reached, its `status` in the `genosdb` database is updated to `"ended"`. This change is picked up by other clients, disabling voting and showing results.
 5.  **Poll Deletion:**
     *   User confirms deletion.
     *   The app first queries for all `proposal` nodes linked to the `votingSession`.
@@ -134,7 +134,7 @@ That's it! No build steps or complex dependencies are needed for this basic vers
 
 This example project is for demonstration purposes. If based on a specific repository, refer to its license. Otherwise, consider it under a permissive license like MIT if you are distributing it.
 
-[dVoting Demo](https://estebanrfp.github.io/dVoting/) Powered by [GraphDB (GDB)](https://github.com/estebanrfp/gdb)
+[dVoting Demo](https://estebanrfp.github.io/dVoting/) Powered by [GenosDB (GDB)](https://github.com/estebanrfp/gdb)
 
 -------------
 
