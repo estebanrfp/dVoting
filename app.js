@@ -1,7 +1,8 @@
-import { GDB } from "https://cdn.jsdelivr.net/npm/genosdb/+esm";
+import { gdb } from "https://cdn.jsdelivr.net/npm/genosdb@latest/dist/index.min.js";
 
-const db = new GDB("voting-app-v10-db"); // Incremented DB name for testing
+const db = await gdb("voting-app-v10-db"); // Migrated to async factory
 
+// UI Elements
 const creatorView = document.getElementById("creatorView");
 const pollNameInput = document.getElementById("pollNameInput");
 const newProposalInput = document.getElementById("newProposalInput");
@@ -30,6 +31,7 @@ let sessionsListenerUnsubscribe = null;
 const countdownIntervals = {};
 let currentProposalsArray = [];
 
+// Set default end time (tomorrow, 2 hours ahead)
 const setDefaultEndTime = () => {
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
@@ -37,7 +39,8 @@ const setDefaultEndTime = () => {
   if (endTimeInputCreator) endTimeInputCreator.value = tomorrow.toISOString().slice(0, 16);
 };
 
-function setStatus(element, message, type = "info") {
+// Show status messages in the UI
+const setStatus = (element, message, type = "info") => {
   if (element) {
     element.textContent = message;
     element.className = `status-message ${type}`;
@@ -54,7 +57,7 @@ function setStatus(element, message, type = "info") {
       }
     }
   }
-}
+};
 
 if (showCreatorViewBtn) {
   showCreatorViewBtn.onclick = () => {
@@ -71,7 +74,8 @@ if (showVotingViewBtn) {
   };
 }
 
-function renderInteractiveProposals() {
+// Render interactive proposals in creator view
+const renderInteractiveProposals = () => {
   if (!proposalsInteractiveListDiv) return;
   proposalsInteractiveListDiv.innerHTML = "";
   if (currentProposalsArray.length === 0) {
@@ -92,7 +96,7 @@ function renderInteractiveProposals() {
     item.append(titleSpan, removeBtn);
     proposalsInteractiveListDiv.appendChild(item);
   });
-}
+};
 
 if (addProposalBtn) {
   addProposalBtn.onclick = () => {
@@ -118,7 +122,8 @@ if (newProposalInput) {
   newProposalInput.onkeypress = (e) => { if (e.key === 'Enter') { e.preventDefault(); addProposalBtn.click(); } };
 }
 
-function resetCreatorForm() {
+// Reset creator form
+const resetCreatorForm = () => {
   if (pollNameInput) pollNameInput.value = "";
   currentProposalsArray = [];
   renderInteractiveProposals();
@@ -127,7 +132,7 @@ function resetCreatorForm() {
   if (shareLinkWrapper) shareLinkWrapper.style.visibility = 'hidden';
   setStatus(creatorStatus, "", "info");
   if (newProposalInput) newProposalInput.value = "";
-}
+};
 
 if (createPollBtn) {
   createPollBtn.onclick = async () => {
@@ -162,7 +167,8 @@ if (createPollBtn) {
   };
 }
 
-async function handleDeleteVotingSession(sessionId, sessionName) {
+// Delete a voting session and its proposals
+const handleDeleteVotingSession = async (sessionId, sessionName) => {
   if (!confirm(`Are you sure you want to delete the poll "${sessionName}"? This action cannot be undone.`)) {
     return;
   }
@@ -194,7 +200,8 @@ async function handleDeleteVotingSession(sessionId, sessionName) {
   }
 }
 
-async function renderActiveVotingsList() {
+// Render the list of active votings
+const renderActiveVotingsList = async () => {
   if (!activeVotingsListItemsDiv) return;
   const { results: allSessions } = await db.map({ query: { type: "votingSession" }, field: "createdAt", order: "desc" });
   activeVotingsListItemsDiv.innerHTML = "";
@@ -250,7 +257,8 @@ async function renderActiveVotingsList() {
   }
 }
 
-function startSmallCountdown(endTime, sessionId, element) {
+// Start countdown for small poll items
+const startSmallCountdown = (endTime, sessionId, element) => {
   const intervalKey = `small-${sessionId}`;
   if (countdownIntervals[intervalKey]) clearInterval(countdownIntervals[intervalKey]);
   function update() {
@@ -266,7 +274,8 @@ function startSmallCountdown(endTime, sessionId, element) {
   update(); countdownIntervals[intervalKey] = setInterval(update, 1000);
 }
 
-async function loadVotingSession(sessionId) {
+// Load a voting session and proposals
+const loadVotingSession = async (sessionId) => {
   currentSessionId = sessionId;
   await renderActiveVotingsList();
   if (votingSessionTitle) votingSessionTitle.textContent = "Loading Poll...";
@@ -294,7 +303,8 @@ async function loadVotingSession(sessionId) {
   } catch (e) { setStatus(votingStatus, `Error loading poll: ${e.message}`, "error"); }
 }
 
-async function updateProposalsUI(sessionIdToUpdate) {
+// Update proposals UI for a session
+const updateProposalsUI = async (sessionIdToUpdate) => {
   if (!sessionIdToUpdate || !db) return;
   const sessionNode = await db.get(sessionIdToUpdate);
   if (!sessionNode || !sessionNode.result) return;
@@ -331,7 +341,8 @@ async function updateProposalsUI(sessionIdToUpdate) {
   else if (winnerMessageDiv) winnerMessageDiv.classList.add("hidden");
 }
 
-async function handleVote(proposalId, buttonElement) {
+// Handle voting for a proposal
+const handleVote = async (proposalId, buttonElement) => {
   if (!currentSessionId) return;
   const storageKey = `voted_in_session_${currentSessionId}`;
   if (localStorage.getItem(storageKey)) {
@@ -365,7 +376,8 @@ async function handleVote(proposalId, buttonElement) {
   }
 }
 
-function startMainCountdown(endTime, sessionId) {
+// Start main countdown for poll
+const startMainCountdown = (endTime, sessionId) => {
   const mainCountdownId = `main-cd-${sessionId}`;
   if (countdownIntervals[mainCountdownId]) clearInterval(countdownIntervals[mainCountdownId]);
   function update() {
@@ -387,7 +399,8 @@ function startMainCountdown(endTime, sessionId) {
   update(); countdownIntervals[mainCountdownId] = setInterval(update, 1000);
 }
 
-function displayWinner(proposals) {
+// Display winner(s) of the poll
+const displayWinner = (proposals) => {
   if (!winnerMessageDiv) return;
   winnerMessageDiv.classList.remove("hidden");
   if (!proposals || proposals.length === 0) { winnerMessageDiv.textContent = "Poll ended. No proposals or votes."; return; }
@@ -399,7 +412,8 @@ function displayWinner(proposals) {
   else winnerMessageDiv.textContent = `🏆 TIE! (${maxVotes} votes): ${winners.map(w => `"${w.value.title}"`).join(', ')}.`;
 }
 
-function initializeAppRouting() {
+// Initialize app routing based on hash
+const initializeAppRouting = () => {
   const hash = window.location.hash.substring(1);
   Object.values(countdownIntervals).forEach(clearInterval);
   for (const key in countdownIntervals) delete countdownIntervals[key];
