@@ -1,6 +1,6 @@
 import { gdb } from "https://cdn.jsdelivr.net/npm/genosdb@latest/dist/index.min.js";
 
-const db = await gdb("voting-app-v10-db"); // Migrated to async factory
+const db = await gdb("voting-app-v10-db", { rtc: true }); // Migrated to async factory
 
 // UI Elements
 const creatorView = document.getElementById("creatorView");
