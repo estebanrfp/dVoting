@@ -2,7 +2,21 @@
 
 ![dVoting App Screenshot](https://i.imgur.com/ERP8CAk.png) <!-- Replace placeholder.png with an actual screenshot -->
 
-This is a minimalist, responsive, real-time peer-to-peer (P2P) voting application built entirely in a single HTML file, showcasing the capabilities of [genosdb](https://github.com/estebanrfp/gdb), a minimalist graph database with P2P support.
+A minimalist, real-time peer-to-peer (P2P) voting application built on [GenosDB](https://github.com/estebanrfp/gdb) — with **cryptographic one-vote-per-identity**.
+
+## How voting works
+
+- Every vote is a **signed node with a deterministic id** (`vote:<pollId>:<address>`): one identity = one vote *by construction*. Voting again overwrites your own vote (you can change your mind until the poll closes) — and tallies are a live **count of vote nodes**, immune to the lost-update races of shared counters.
+- **Governance**: everyone starts as a read-only `guest`; public rules promote you to `voter` (~10 s — voting is an earned right) and `admin` (2 polls created, moderation), signed by the demo superadmin while online.
+- **ACLs**: polls belong to their creators; your vote node belongs to you.
+- Follows the [GenosDB Design Guide](https://github.com/estebanrfp/gdb/blob/main/docs/genosdb-design-guide.md): design tokens, dark theme, identity in a centered dialog, session top-right, live tally bars.
+
+| Role | Capabilities | How it is earned |
+|---|---|---|
+| `guest` | watch live results | You start here |
+| `voter` | vote & create polls | ~10 s after signing in |
+| `admin` | delete any poll | 2 polls created |
+| `superadmin` | signs promotions | Demo identity (one click) |
 
 **Live Demo:** [https://estebanrfp.github.io/dVoting/]
 

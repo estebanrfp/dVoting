@@ -3,69 +3,120 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>dVoting App</title>
+    <title>dVoting — P2P Voting on GenosDB</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="app-wrapper">
-        <header class="main-header"><h1>🗳️ dVoting</h1></header>
-        <main class="content-area">
-            <div id="creatorView" class="view-container creator-container hidden">
-                <h2>Create New Poll</h2>
-                <div class="creator-col-1">
-                    <div class="form-group">
-                        <label for="pollNameInput">Poll Name/Topic</label>
-                        <input type="text" id="pollNameInput" placeholder="e.g., Next team lunch spot?" />
-                    </div>
-                    <div class="form-group">
-                        <label for="newProposalInput">Add Proposal Option</label>
-                        <div class="proposal-input-group">
-                            <input type="text" id="newProposalInput" placeholder="Enter proposal title" />
-                            <button id="addProposalBtn">Add</button>
-                        </div>
-                    </div>
-                    <div class="form-group" style="flex-grow: 1; display:flex; flex-direction:column;">
-                        <label>Current Proposals</label>
-                        <div class="proposals-interactive-list" id="proposalsInteractiveList">
-                            <p style="text-align:center; color:#6c757d; margin-top:10px;">No proposals added yet.</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="creator-col-2">
-                    <div class="form-group">
-                        <label for="endTimeInputCreator">End Date and Time</label>
-                        <input type="datetime-local" id="endTimeInputCreator" />
-                    </div>
-                    <div class="form-group" id="shareLinkContainerWrapper" style="margin-top: auto;">
-                        <p id="creatorStatus" class="status-message"></p>
-                        <div id="shareLinkContainer" class="hidden">
-                            <p>Poll created! Share this link:</p>
-                            <a href="#" id="shareLink" target="_blank"></a>
-                        </div>
-                    </div>
-                </div>
-                <div class="creator-footer">
-                    <button id="createPollBtn">Create Poll & Get Link</button>
-                    <button id="showVotingViewBtn" style="background-color: #2ecc71; border-color:#2ecc71;">View Active Polls</button>
-                </div>
+    <div class="app-container">
+        <aside class="menu-column">
+            <h2>d<span class="brand-accent">Voting</span></h2>
+
+            <button id="newPollBtn" class="primary-btn" style="display: none;">+ New Poll</button>
+            <p id="voterHint" class="warn-hint" style="display: none;">
+                Creating polls and voting unlock with the <em>voter</em> role —
+                granted ~10&nbsp;s after signing in while a superadmin is online.
+            </p>
+
+            <!-- Live navigation: open polls, newest first -->
+            <div class="sidebar-section">
+                <h3>Active polls</h3>
+                <div id="activePollsList"></div>
             </div>
 
-            <div id="votingView" class="view-container voting-layout">
-                <aside class="active-votings-sidebar">
-                    <h3>Active Polls</h3>
-                    <div id="activeVotingsListItems" class="active-votings-list-items"></div>
-                    <button id="showCreatorViewBtn">Create New Poll</button>
-                </aside>
-                <section class="current-voting-area">
-                    <h2 id="votingSessionTitle">Select a Poll</h2>
-                    <div id="countdown"></div>
-                    <div id="proposalsList"></div>
-                    <div id="winnerMessage" class="hidden"></div>
-                    <p id="votingStatus" class="status-message"></p>
-                </section>
+            <!-- Governance ladder, always visible -->
+            <div class="sidebar-widget">
+                <h2>How roles work</h2>
+                <p class="ladder-hint">
+                    Everyone starts as a read-only <strong>guest</strong> ·
+                    <em>voter</em> after 10&nbsp;s (votes &amp; creates polls) ·
+                    <em>admin</em> at 2 polls created (moderation).
+                </p>
             </div>
+        </aside>
+
+        <main class="content-column">
+            <!-- Top bar: identity top-right (Design Guide) -->
+            <header class="top-bar">
+                <span class="top-bar-spacer"></span>
+                <div id="sessionBar" class="session-bar" style="display: none;">
+                    <span id="whoami" class="whoami"></span>
+                    <span id="myRole" class="role-badge" data-role="guest">guest</span>
+                    <button id="logoutBtn">Logout</button>
+                </div>
+                <div id="identityPanel">
+                    <button id="openLoginBtn" class="primary-btn">🔑 Sign in / Register</button>
+                </div>
+            </header>
+
+            <!-- Creator view -->
+            <section id="creatorSection">
+                <h1>Create a poll</h1>
+                <div class="creator-card">
+                    <label>Poll name
+                        <input type="text" id="pollNameInput" placeholder="e.g., Where should we host the next meetup?">
+                    </label>
+
+                    <label>Proposals (2–10)
+                        <span class="add-row">
+                            <input type="text" id="newProposalInput" placeholder="Add a proposal option">
+                            <button id="addProposalBtn" type="button">Add</button>
+                        </span>
+                    </label>
+                    <div id="proposalsDraftList" class="draft-list"></div>
+
+                    <label>Closes at
+                        <input type="datetime-local" id="endTimeInput">
+                    </label>
+
+                    <button id="createPollBtn" class="primary-btn">Create poll</button>
+
+                    <div id="shareLinkBox" class="share-box" style="display: none;">
+                        <h3>Share this poll</h3>
+                        <a id="shareLink" href="#" class="mono"></a>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Poll view -->
+            <section id="pollSection" style="display: none;">
+                <h1 id="pollTitle"></h1>
+                <p id="pollMeta" class="poll-meta mono"></p>
+                <p id="countdown" class="countdown"></p>
+
+                <div id="winnerBanner" class="winner-banner" style="display: none;"></div>
+                <p id="signinVoteHint" class="warn-hint" style="display: none;">
+                    Watching live as a visitor — <strong>sign in</strong> (top right) to earn the right to vote.
+                </p>
+                <p id="guestVoteHint" class="warn-hint" style="display: none;">
+                    Your <em>voter</em> role is on its way — promotions are signed while a superadmin is online (~10&nbsp;s).
+                </p>
+
+                <div id="proposalsList" class="proposals"></div>
+            </section>
         </main>
     </div>
+
+    <!-- Identity modal: one textarea for pasting or displaying a mnemonic
+         (three-phase flow, see the GenosDB Design Guide). -->
+    <dialog id="identityModal" class="modal">
+        <button id="closeModalBtn" class="modal-close" aria-label="Close">×</button>
+        <h3>Your identity</h3>
+        <p class="modal-hint">
+            One identity = one vote, cryptographically. Sign in and the governance
+            rules promote you: <em>voter</em> after 10&nbsp;s, <em>admin</em> at 2 polls created.
+        </p>
+        <textarea id="mnemonicBox" rows="3" placeholder="Paste your mnemonic phrase — or generate a new identity"></textarea>
+        <div class="modal-actions">
+            <button id="generateBtn">Generate identity</button>
+            <button id="copyBtn">Copy phrase</button>
+            <button id="loginBtn">Login with mnemonic</button>
+            <button id="protectBtn" style="display: none;">Protect with passkey</button>
+            <button id="webauthnLoginBtn" style="display: none;">Login with passkey</button>
+        </div>
+        <button id="superadminBtn" class="superadmin-btn" title="Runs the governance engine in this browser">🛡️ Demo superadmin</button>
+    </dialog>
+
+    <div id="toast" class="toast"></div>
 
     <script type="module" src="app.js"></script>
 </body>

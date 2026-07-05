@@ -1,448 +1,481 @@
-import { gdb } from "https://cdn.jsdelivr.net/npm/genosdb@latest/dist/index.min.js";
+// dVoting — real-time P2P voting on GenosDB, with cryptographic one-vote-per-identity.
+//
+// What this example demonstrates, end to end:
+//   • Votes as signed nodes with a DETERMINISTIC id (`vote:<session>:<address>`):
+//     one identity = one vote by construction — voting again OVERWRITES your own
+//     vote (changing your mind is allowed until the poll closes), and tallies are
+//     a live COUNT of vote nodes, immune to the lost-update problem of counters.
+//   • Zero-trust + Governance: visitors watch results as read-only guests; public
+//     rules promote them to `voter` (~10 s) and `admin` (moderation) while a
+//     superadmin is online. Even the right to vote is earned.
+//   • ACLs: polls belong to their creator; your vote node belongs to you.
+//   • GenosDB Design Guide: tokens, dark theme, identity in a centered <dialog>,
+//     session top-right as `0x… [role]`, toasts instead of alerts.
+import { gdb } from "https://cdn.jsdelivr.net/npm/genosdb@latest/dist/index.min.js"
 
-const db = await gdb("voting-app-v10-db", { rtc: true }); // Migrated to async factory
+// ============================== Configuration ==============================
 
-// UI Elements
-const creatorView = document.getElementById("creatorView");
-const pollNameInput = document.getElementById("pollNameInput");
-const newProposalInput = document.getElementById("newProposalInput");
-const addProposalBtn = document.getElementById("addProposalBtn");
-const proposalsInteractiveListDiv = document.getElementById("proposalsInteractiveList");
-const endTimeInputCreator = document.getElementById("endTimeInputCreator");
-const createPollBtn = document.getElementById("createPollBtn");
-const creatorStatus = document.getElementById("creatorStatus");
-const shareLinkContainer = document.getElementById("shareLinkContainer");
-const shareLinkWrapper = document.getElementById("shareLinkContainerWrapper");
-const shareLink = document.getElementById("shareLink");
-const showVotingViewBtn = document.getElementById("showVotingViewBtn");
+const DB_NAME = "dvoting" // database name = P2P room name
 
-const votingView = document.getElementById("votingView");
-const showCreatorViewBtn = document.getElementById("showCreatorViewBtn");
-const votingSessionTitle = document.getElementById("votingSessionTitle");
-const countdownDisplay = document.getElementById("countdown");
-const proposalsListDiv = document.getElementById("proposalsList");
-const winnerMessageDiv = document.getElementById("winnerMessage");
-const votingStatus = document.getElementById("votingStatus");
-const activeVotingsListItemsDiv = document.getElementById("activeVotingsListItems");
+// Demo superadmin — SHOWCASE ONLY. Its mnemonic is public so any visitor can
+// run the governance engine. Replace both for a real deployment.
+const DEMO_SUPERADMIN = {
+  address: "0xbfDe0eCEC5332Fd86D2570085571D6051Df098dA",
+  mnemonic: "panic now afford carbon donate lecture drift excite collect essay stuff prosper",
+}
 
-let currentSessionId = null;
-let proposalsUnsubscribe = null;
-let sessionsListenerUnsubscribe = null;
-const countdownIntervals = {};
-let currentProposalsArray = [];
+// Custom RBAC roles. Writing — and therefore VOTING — must be earned.
+const ROLES = {
+  superadmin: { can: ["assignRole"], inherits: ["admin"] }, // signs promotions
+  admin: { can: ["delete", "deleteAny"], inherits: ["voter"] }, // moderates spam polls
+  voter: { can: ["write", "link", "sync"], inherits: ["guest"] }, // votes & creates polls
+  guest: { can: ["read", "sync"] }, // watches results only
+}
 
-// Set default end time (tomorrow, 2 hours ahead)
+// Public advancement rules (last-match-wins, low demo thresholds).
+const MEMBER = { $in: ["voter", "admin"] }
+const GOVERNANCE_RULES = [
+  { if: { role: "guest" }, offsetTimestamp: 10000, then: { assignRole: "voter" } }, // onboarding gate
+  { if: { role: MEMBER }, then: { assignRole: "voter" } }, // floor
+  { if: { role: MEMBER, pollsCreated: { $gte: 2 } }, then: { assignRole: "admin" } }, // climb
+]
+
+// ================================ Database =================================
+
+const db = await gdb(DB_NAME, {
+  rtc: true, // required by the Security Manager
+  sm: {
+    superAdmins: [DEMO_SUPERADMIN.address],
+    customRoles: ROLES,
+    governanceRules: GOVERNANCE_RULES,
+    acls: true, // polls belong to creators; votes belong to voters
+  },
+})
+globalThis.db = db // console handle (matches the official examples)
+
+// ================================ Helpers ==================================
+
+const $ = (id) => document.getElementById(id)
+
+/** Escape untrusted text before inserting it into HTML (peers write it). */
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]))
+
+const toast = (msg, isError = false) => {
+  const el = $("toast")
+  el.textContent = msg
+  el.className = `toast show${isError ? " error" : ""}`
+  clearTimeout(toast._t)
+  toast._t = setTimeout(() => (el.className = "toast"), 3200)
+}
+
+const fmtLeft = (ms) => {
+  const d = Math.floor(ms / 86400000), h = Math.floor(ms / 3600000 % 24),
+        m = Math.floor(ms / 60000 % 60), s = Math.floor(ms / 1000 % 60)
+  return `${d}d ${h}h ${m}m ${s}s`
+}
+
+/** A poll's liveness is DERIVED from endTime — no peer ever needs write
+ *  access to "close" someone else's poll (ACLs would rightly refuse). */
+const isOpen = (session) => session.endTime > Date.now()
+
+// =============================== Identity ==================================
+
+let myAddress = null
+let myRole = null
+let unsubRole = null
+
+const can = (permission) => {
+  let role = myRole
+  while (role && ROLES[role]) {
+    if (ROLES[role].can.includes(permission)) return true
+    role = ROLES[role].inherits?.[0]
+  }
+  return false
+}
+
+const applyPermissionsToUI = () => {
+  $("newPollBtn").style.display = can("write") ? "block" : "none"
+  $("voterHint").style.display = myAddress && !can("write") ? "block" : "none"
+  renderPoll() // vote buttons + delete affordances depend on the live role
+}
+
+db.sm.setSecurityStateChangeCallback((state) => {
+  if (state.isActive) {
+    myAddress = state.activeAddress
+    $("identityModal").close()
+    $("identityPanel").style.display = "none"
+    $("sessionBar").style.display = "flex"
+    $("whoami").textContent = state.abbrAddr
+    watchMyRole()
+  } else {
+    unsubRole?.(); unsubRole = null
+    myAddress = myRole = null
+    $("sessionBar").style.display = "none"
+    $("identityPanel").style.display = "block"
+    $("mnemonicBox").readOnly = false
+    $("generateBtn").style.display = "inline-block"
+    $("protectBtn").style.display = "none"
+    $("webauthnLoginBtn").style.display = db.sm.hasExistingWebAuthnRegistration() ? "inline-block" : "none"
+    queueMicrotask(() => applyPermissionsToUI())
+  }
+})
+
+const watchMyRole = async () => {
+  unsubRole?.()
+  const { unsubscribe } = await db.get(`user:${myAddress}`, (node) => {
+    const next = node?.value?.role ?? "guest"
+    if (next !== myRole) {
+      myRole = next
+      $("myRole").textContent = myRole
+      $("myRole").dataset.role = myRole
+      applyPermissionsToUI()
+    }
+  })
+  unsubRole = unsubscribe
+}
+
+// --- Identity modal (three-phase state machine, see the Design Guide) ---
+
+$("openLoginBtn").onclick = () => $("identityModal").showModal()
+$("closeModalBtn").onclick = () => $("identityModal").close()
+$("identityModal").onclick = (e) => { if (e.target === $("identityModal")) $("identityModal").close() }
+
+$("generateBtn").onclick = async () => {
+  const identity = await db.sm.startNewUserRegistration()
+  if (!identity) return toast("Could not generate an identity", true)
+  const box = $("mnemonicBox")
+  box.value = identity.mnemonic
+  box.readOnly = true
+  $("generateBtn").style.display = "none"
+  $("protectBtn").style.display = "inline-block"
+  toast("SAVE THIS PHRASE — it is your only way back into this identity")
+}
+
+$("copyBtn").onclick = async () => {
+  const phrase = $("mnemonicBox").value.trim()
+  if (!phrase) return
+  await navigator.clipboard.writeText(phrase)
+  toast("Phrase copied to clipboard")
+}
+
+$("loginBtn").onclick = async () => {
+  const phrase = $("mnemonicBox").value.trim()
+  if (!phrase) return toast("Paste (or generate) a mnemonic first", true)
+  const identity = await db.sm.loginOrRecoverUserWithMnemonic(phrase)
+  identity ? toast(`Welcome ${db.sm.abbrAddr(identity.address)}`) : toast("Login failed", true)
+}
+
+$("protectBtn").onclick = async () => {
+  const address = await db.sm.protectCurrentIdentityWithWebAuthn()
+  address ? toast("Identity protected with a passkey") : toast("Passkey protection failed (HTTPS required)", true)
+}
+
+$("webauthnLoginBtn").onclick = async () => {
+  const address = await db.sm.loginCurrentUserWithWebAuthn()
+  if (!address) toast("Passkey login failed", true)
+}
+
+$("superadminBtn").onclick = () => db.sm.loginOrRecoverUserWithMnemonic(DEMO_SUPERADMIN.mnemonic)
+$("logoutBtn").onclick = () => db.sm.clearSecurity()
+
+// ======================== Poll creation (creator view) =====================
+
+let draftProposals = []
+
+const renderDraftProposals = () => {
+  const list = $("proposalsDraftList")
+  list.innerHTML = draftProposals.length ? "" : '<p class="empty-hint">No proposals added yet — add at least two.</p>'
+  draftProposals.forEach((title, i) => {
+    const row = document.createElement("div")
+    row.className = "draft-row"
+    row.innerHTML = `<span>${esc(title)}</span><button aria-label="Remove proposal">×</button>`
+    row.querySelector("button").onclick = () => { draftProposals.splice(i, 1); renderDraftProposals() }
+    list.appendChild(row)
+  })
+}
+
+$("addProposalBtn").onclick = () => {
+  const title = $("newProposalInput").value.trim()
+  if (!title) return toast("Proposal title cannot be empty", true)
+  if (draftProposals.includes(title)) return toast("This proposal already exists", true)
+  if (draftProposals.length >= 10) return toast("Maximum of 10 proposals", true)
+  draftProposals.push(title)
+  $("newProposalInput").value = ""
+  $("newProposalInput").focus()
+  renderDraftProposals()
+}
+$("newProposalInput").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); $("addProposalBtn").click() } }
+
 const setDefaultEndTime = () => {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(tomorrow.getHours() + 2, 0, 0, 0);
-  if (endTimeInputCreator) endTimeInputCreator.value = tomorrow.toISOString().slice(0, 16);
-};
-
-// Show status messages in the UI
-const setStatus = (element, message, type = "info") => {
-  if (element) {
-    element.textContent = message;
-    element.className = `status-message ${type}`;
-    const displayStyle = message ? 'block' : 'none';
-    element.style.display = displayStyle;
-
-    if (element.id === 'creatorStatus') {
-      if (shareLinkWrapper) {
-        if (message || (shareLinkContainer && !shareLinkContainer.classList.contains('hidden'))) {
-          shareLinkWrapper.style.visibility = 'visible';
-        } else {
-          shareLinkWrapper.style.visibility = 'hidden';
-        }
-      }
-    }
-  }
-};
-
-if (showCreatorViewBtn) {
-  showCreatorViewBtn.onclick = () => {
-    if (votingView) votingView.classList.add('hidden');
-    if (creatorView) creatorView.classList.remove('hidden');
-    window.location.hash = "";
-    resetCreatorForm();
-  };
-}
-if (showVotingViewBtn) {
-  showVotingViewBtn.onclick = () => {
-    if (creatorView) creatorView.classList.add('hidden');
-    if (votingView) votingView.classList.remove('hidden');
-  };
+  const t = new Date(Date.now() + 26 * 3600000) // tomorrow +2h
+  t.setMinutes(0, 0, 0)
+  $("endTimeInput").value = t.toISOString().slice(0, 16)
 }
 
-// Render interactive proposals in creator view
-const renderInteractiveProposals = () => {
-  if (!proposalsInteractiveListDiv) return;
-  proposalsInteractiveListDiv.innerHTML = "";
-  if (currentProposalsArray.length === 0) {
-    proposalsInteractiveListDiv.innerHTML = `<p style="text-align:center; color:#6c757d; margin-top:10px;">No proposals added yet.</p>`;
-    return;
-  }
-  currentProposalsArray.forEach((proposalTitle, index) => {
-    const item = document.createElement("div");
-    item.className = "proposal-interactive-item";
-    const titleSpan = document.createElement("span");
-    titleSpan.textContent = proposalTitle;
-    const removeBtn = document.createElement("button");
-    removeBtn.textContent = "Remove";
-    removeBtn.onclick = () => {
-      currentProposalsArray.splice(index, 1);
-      renderInteractiveProposals();
-    };
-    item.append(titleSpan, removeBtn);
-    proposalsInteractiveListDiv.appendChild(item);
-  });
-};
-
-if (addProposalBtn) {
-  addProposalBtn.onclick = () => {
-    const proposalTitle = newProposalInput.value.trim();
-    if (proposalTitle) {
-      if (currentProposalsArray.includes(proposalTitle)) {
-        setStatus(creatorStatus, "This proposal already exists.", "error"); return;
-      }
-      if (currentProposalsArray.length >= 10) {
-        setStatus(creatorStatus, "Maximum of 10 proposals allowed.", "error"); return;
-      }
-      currentProposalsArray.push(proposalTitle);
-      newProposalInput.value = "";
-      renderInteractiveProposals();
-      setStatus(creatorStatus, "", "info");
-    } else {
-      setStatus(creatorStatus, "Proposal title cannot be empty.", "error");
-    }
-    newProposalInput.focus();
-  };
-}
-if (newProposalInput) {
-  newProposalInput.onkeypress = (e) => { if (e.key === 'Enter') { e.preventDefault(); addProposalBtn.click(); } };
-}
-
-// Reset creator form
 const resetCreatorForm = () => {
-  if (pollNameInput) pollNameInput.value = "";
-  currentProposalsArray = [];
-  renderInteractiveProposals();
-  setDefaultEndTime();
-  if (shareLinkContainer) shareLinkContainer.classList.add("hidden");
-  if (shareLinkWrapper) shareLinkWrapper.style.visibility = 'hidden';
-  setStatus(creatorStatus, "", "info");
-  if (newProposalInput) newProposalInput.value = "";
-};
-
-if (createPollBtn) {
-  createPollBtn.onclick = async () => {
-    setStatus(creatorStatus, "", "info");
-    if (shareLinkContainer) shareLinkContainer.classList.add("hidden");
-    if (shareLinkWrapper) shareLinkWrapper.style.visibility = 'hidden';
-
-    const pollNameValue = pollNameInput ? pollNameInput.value.trim() : "";
-    if (!pollNameValue) return setStatus(creatorStatus, "Please enter a name for the poll.", "error");
-    if (currentProposalsArray.length < 2) return setStatus(creatorStatus, "Please add at least two proposal options.", "error");
-
-    if (!endTimeInputCreator || !endTimeInputCreator.value) return setStatus(creatorStatus, "Select an end date and time.", "error");
-    const endTime = new Date(endTimeInputCreator.value).getTime();
-    if (isNaN(endTime) || endTime <= Date.now() + 60000) return setStatus(creatorStatus, "End date must be at least 1 minute in the future.", "error");
-
-    createPollBtn.disabled = true;
-    setStatus(creatorStatus, "Creating poll...", "info");
-    try {
-      const sessionId = await db.put({ type: "votingSession", name: pollNameValue, endTime, status: "active", createdAt: Date.now() });
-      for (let i = 0; i < currentProposalsArray.length; i++) {
-        await db.put({ type: "proposal", sessionId, title: currentProposalsArray[i], votes: 0, originalIndex: i });
-      }
-      const linkUrl = `${window.location.origin}${window.location.pathname}#${sessionId}`;
-      if (shareLink) { shareLink.href = linkUrl; shareLink.textContent = linkUrl; }
-
-      setStatus(creatorStatus, "Poll created successfully! Link generated below.", "success");
-      if (shareLinkContainer) shareLinkContainer.classList.remove("hidden");
-      if (shareLinkWrapper) shareLinkWrapper.style.visibility = 'visible';
-
-    } catch (e) { setStatus(creatorStatus, `Error creating poll: ${e.message}`, "error"); }
-    finally { createPollBtn.disabled = false; }
-  };
+  $("pollNameInput").value = ""
+  $("newProposalInput").value = ""
+  draftProposals = []
+  renderDraftProposals()
+  setDefaultEndTime()
+  $("shareLinkBox").style.display = "none"
 }
 
-// Delete a voting session and its proposals
-const handleDeleteVotingSession = async (sessionId, sessionName) => {
-  if (!confirm(`Are you sure you want to delete the poll "${sessionName}"? This action cannot be undone.`)) {
-    return;
-  }
-  setStatus(votingStatus, `Deleting poll "${sessionName}"...`, "info");
-  try {
-    const { results: proposalsNodesToDelete } = await db.map({
-      query: { type: "proposal", sessionId: sessionId },
-      realtime: false
-    });
-    const proposalDeletePromises = proposalsNodesToDelete.map(pNode => db.remove(pNode.id));
-    await Promise.all(proposalDeletePromises);
-    await db.remove(sessionId);
-
-    if (currentSessionId === sessionId) {
-      currentSessionId = null;
-      if (votingSessionTitle) votingSessionTitle.textContent = "Select a Poll";
-      if (countdownDisplay) countdownDisplay.textContent = "";
-      if (proposalsListDiv) proposalsListDiv.innerHTML = "<p style='text-align:center'>The poll you were viewing has been deleted.</p>";
-      if (winnerMessageDiv) winnerMessageDiv.classList.add("hidden");
-      if (proposalsUnsubscribe) { proposalsUnsubscribe(); proposalsUnsubscribe = null; }
-      setStatus(votingStatus, `Poll "${sessionName}" deleted successfully.`, "success");
-      if (window.location.hash === `#${sessionId}`) window.location.hash = "";
-    } else {
-      setStatus(votingStatus, `Poll "${sessionName}" deleted successfully.`, "success");
-    }
-  } catch (error) {
-    console.error("Error deleting voting session:", sessionId, error);
-    setStatus(votingStatus, `Error deleting poll: ${error.message}`, "error");
-  }
-}
-
-// Render the list of active votings
-const renderActiveVotingsList = async () => {
-  if (!activeVotingsListItemsDiv) return;
-  const { results: allSessions } = await db.map({ query: { type: "votingSession" }, field: "createdAt", order: "desc" });
-  activeVotingsListItemsDiv.innerHTML = "";
-  const activeNowSessions = [];
-
-  for (const sessionNode of allSessions) {
-    const session = sessionNode.value;
-    const sessionId = sessionNode.id;
-    if (session.endTime <= Date.now() && session.status === 'active') {
-      db.put({ ...session, status: "ended" }, sessionId).catch(err => console.warn("Error auto-ending session:", sessionId, err));
-    } else if (session.status === 'active') {
-      activeNowSessions.push(sessionNode);
-    }
-  }
-
-  if (activeNowSessions.length === 0) {
-    const p = document.createElement('p');
-    p.textContent = "No active polls at the moment.";
-    p.style.textAlign = "center"; p.style.opacity = "0.7";
-    activeVotingsListItemsDiv.appendChild(p);
-  } else {
-    activeNowSessions.forEach(sessionNode => {
-      const session = sessionNode.value;
-      const sessionId = sessionNode.id;
-      const itemDiv = document.createElement("div");
-      itemDiv.className = "active-voting-item";
-      itemDiv.dataset.sessionId = sessionId;
-      if (sessionId === currentSessionId) itemDiv.classList.add("selected");
-
-      const detailsDiv = document.createElement("div");
-      detailsDiv.className = "active-voting-item-details";
-      detailsDiv.onclick = () => { window.location.hash = sessionId; };
-
-      const titleH4 = document.createElement("h4");
-      titleH4.textContent = session.name || `Poll ${sessionId.substring(0, 6)}`;
-      const countdownSmall = document.createElement("div");
-      countdownSmall.className = "countdown-small";
-      countdownSmall.id = `countdown-small-${sessionId}`;
-      detailsDiv.append(titleH4, countdownSmall);
-
-      const deleteBtn = document.createElement("button");
-      deleteBtn.className = "delete-session-btn";
-      deleteBtn.innerHTML = "×";
-      deleteBtn.title = "Delete Poll";
-      deleteBtn.onclick = (e) => {
-        e.stopPropagation();
-        handleDeleteVotingSession(sessionId, session.name || `Poll ${sessionId.substring(0, 6)}`);
-      };
-      itemDiv.append(detailsDiv, deleteBtn);
-      activeVotingsListItemsDiv.appendChild(itemDiv);
-      startSmallCountdown(session.endTime, sessionId, countdownSmall);
-    });
-  }
-}
-
-// Start countdown for small poll items
-const startSmallCountdown = (endTime, sessionId, element) => {
-  const intervalKey = `small-${sessionId}`;
-  if (countdownIntervals[intervalKey]) clearInterval(countdownIntervals[intervalKey]);
-  function update() {
-    if (!element || !document.body.contains(element)) { clearInterval(countdownIntervals[intervalKey]); delete countdownIntervals[intervalKey]; return; }
-    const timeLeft = endTime - Date.now();
-    if (timeLeft <= 0) {
-      clearInterval(countdownIntervals[intervalKey]); delete countdownIntervals[intervalKey];
-      element.textContent = "Finished"; return;
-    }
-    const d = Math.floor(timeLeft / (1000 * 60 * 60 * 24)), h = Math.floor(timeLeft / (1000 * 60 * 60) % 24), m = Math.floor(timeLeft / 60000 % 60), s = Math.floor(timeLeft / 1000 % 60);
-    element.textContent = `${d}d ${h}h ${m}m ${s}s left`;
-  }
-  update(); countdownIntervals[intervalKey] = setInterval(update, 1000);
-}
-
-// Load a voting session and proposals
-const loadVotingSession = async (sessionId) => {
-  currentSessionId = sessionId;
-  await renderActiveVotingsList();
-  if (votingSessionTitle) votingSessionTitle.textContent = "Loading Poll...";
-  if (countdownDisplay) countdownDisplay.textContent = "";
-  if (proposalsListDiv) proposalsListDiv.innerHTML = "";
-  if (winnerMessageDiv) winnerMessageDiv.classList.add("hidden");
-  setStatus(votingStatus, "", "info");
-  if (proposalsUnsubscribe) { proposalsUnsubscribe(); proposalsUnsubscribe = null; }
+$("createPollBtn").onclick = async () => {
+  const name = $("pollNameInput").value.trim()
+  if (!name) return toast("Please enter a name for the poll", true)
+  if (draftProposals.length < 2) return toast("Add at least two proposal options", true)
+  const endTime = new Date($("endTimeInput").value).getTime()
+  if (isNaN(endTime) || endTime <= Date.now() + 60000) return toast("End time must be at least 1 minute in the future", true)
 
   try {
-    const sessionNode = await db.get(sessionId);
-    if (!sessionNode || !sessionNode.result || sessionNode.result.value.type !== "votingSession") {
-      setStatus(votingStatus, "Poll not found or invalid.", "error");
-      if (votingSessionTitle) votingSessionTitle.textContent = "Error Loading"; return;
+    await db.sm.executeWithPermission("write") // guests can't create polls
+
+    // The poll and its proposals are ACL-owned by the creator.
+    const sessionId = await db.sm.acls.set({
+      type: "votingSession", name, endTime, owner: myAddress, createdAt: Date.now(),
+    })
+    for (let i = 0; i < draftProposals.length; i++) {
+      await db.sm.acls.set({ type: "proposal", sessionId, title: draftProposals[i], originalIndex: i })
     }
-    const session = sessionNode.result.value;
-    if (votingSessionTitle) votingSessionTitle.textContent = session.name;
-    startMainCountdown(session.endTime, sessionId);
-    const { unsubscribe } = await db.map(
-      { query: { type: "proposal", sessionId: sessionId }, field: "originalIndex", order: "asc", realtime: true },
-      () => updateProposalsUI(sessionId)
-    );
-    proposalsUnsubscribe = unsubscribe;
-    await updateProposalsUI(sessionId);
-  } catch (e) { setStatus(votingStatus, `Error loading poll: ${e.message}`, "error"); }
+    await bumpPollsCreated() // governance metric on my user node
+
+    const url = `${location.origin}${location.pathname}#${sessionId}`
+    $("shareLink").href = url
+    $("shareLink").textContent = url
+    $("shareLinkBox").style.display = "block"
+    toast("Poll created — share the link!")
+  } catch (err) {
+    toast(err.message, true)
+  }
 }
 
-// Update proposals UI for a session
-const updateProposalsUI = async (sessionIdToUpdate) => {
-  if (!sessionIdToUpdate || !db) return;
-  const sessionNode = await db.get(sessionIdToUpdate);
-  if (!sessionNode || !sessionNode.result) return;
-  const session = sessionNode.result.value;
-  const isSessionActive = session.status === "active" && session.endTime > Date.now();
-  const votedProposalIdInThisSession = localStorage.getItem(`voted_in_session_${sessionIdToUpdate}`);
-
-  if (votingSessionTitle && votingSessionTitle.textContent !== session.name) votingSessionTitle.textContent = session.name;
-  const { results: proposals } = await db.map({ query: { type: "proposal", sessionId: sessionIdToUpdate }, field: "originalIndex", order: "asc" });
-
-  if (proposalsListDiv) proposalsListDiv.innerHTML = "";
-  if (proposals.length === 0) {
-    if (proposalsListDiv) proposalsListDiv.innerHTML = `<p style="text-align:center;">${isSessionActive ? "No proposals yet." : "No proposals in this poll."}</p>`;
-  } else {
-    proposals.forEach(pNode => {
-      const proposal = pNode.value;
-      const pId = pNode.id;
-      const item = document.createElement("div"); item.className = "proposal-item";
-      const titleEl = document.createElement("h3"); titleEl.textContent = proposal.title;
-      const votesEl = document.createElement("p"); votesEl.className = "votes";
-      votesEl.innerHTML = `Votes: <span id="votes-${pId}">${proposal.votes || 0}</span>`;
-      const voteBtn = document.createElement("button");
-      if (votedProposalIdInThisSession) {
-        voteBtn.disabled = true;
-        if (votedProposalIdInThisSession === pId) { voteBtn.textContent = "Your Vote ✔️"; voteBtn.classList.add("voted-for"); }
-        else { voteBtn.textContent = "Vote"; }
-      } else { voteBtn.textContent = "Vote"; voteBtn.disabled = !isSessionActive; }
-      voteBtn.onclick = (event) => handleVote(pId, event.target);
-      item.append(titleEl, votesEl, voteBtn);
-      if (proposalsListDiv) proposalsListDiv.appendChild(item);
-    });
-  }
-  if (!isSessionActive) displayWinner(proposals);
-  else if (winnerMessageDiv) winnerMessageDiv.classList.add("hidden");
+/** Aggregate the governance metric (spread keeps `role` intact!). */
+const bumpPollsCreated = async () => {
+  const id = `user:${myAddress}`
+  const { result } = await db.get(id)
+  await db.put({ ...result.value, pollsCreated: (result.value.pollsCreated ?? 0) + 1 }, id)
 }
 
-// Handle voting for a proposal
-const handleVote = async (proposalId, buttonElement) => {
-  if (!currentSessionId) return;
-  const storageKey = `voted_in_session_${currentSessionId}`;
-  if (localStorage.getItem(storageKey)) {
-    setStatus(votingStatus, "You have already voted in this poll.", "info");
-    if (buttonElement) buttonElement.disabled = true; return;
+// ====================== Active polls (sidebar navigation) ==================
+
+const timers = {} // countdown intervals, keyed by element id
+
+const tick = (key, el, endTime, prefix = "") => {
+  clearInterval(timers[key])
+  const update = () => {
+    if (!document.body.contains(el)) return clearInterval(timers[key])
+    const left = endTime - Date.now()
+    el.textContent = left <= 0 ? "Finished" : prefix + fmtLeft(left) + (prefix ? "" : " left")
+    if (left <= 0) { clearInterval(timers[key]); renderPoll() } // derive "ended" — no write needed
   }
-  if (buttonElement) buttonElement.disabled = true;
+  update()
+  timers[key] = setInterval(update, 1000)
+}
+
+let sessions = new Map() // id → session value (fed by the live subscription)
+
+const renderSessionsList = () => {
+  const list = $("activePollsList")
+  const open = [...sessions.entries()].filter(([, s]) => isOpen(s))
+    .sort((a, b) => b[1].createdAt - a[1].createdAt)
+  list.innerHTML = open.length ? "" : '<p class="empty-hint">No active polls right now.</p>'
+
+  for (const [id, s] of open) {
+    const item = document.createElement("div")
+    item.className = "poll-item" + (id === currentSessionId ? " selected" : "")
+    item.innerHTML = `
+      <div class="poll-item-info">
+        <h4>${esc(s.name)}</h4>
+        <span class="countdown-small" id="cd-${id}"></span>
+      </div>
+      ${(myAddress && (s.owner === myAddress || can("deleteAny"))) ? '<button class="poll-delete" title="Delete poll">×</button>' : ""}`
+    item.querySelector(".poll-item-info").onclick = () => { location.hash = id }
+    item.querySelector(".poll-delete")?.addEventListener("click", (e) => {
+      e.stopPropagation()
+      deletePoll(id, s.name)
+    })
+    list.appendChild(item)
+    tick(`cd-${id}`, item.querySelector(`[id="cd-${id}"]`), s.endTime)
+  }
+}
+
+// ONE live subscription keeps the sessions map fresh (all four actions).
+db.map({ query: { type: "votingSession" } }, ({ id, value, action }) => {
+  if (action === "removed") sessions.delete(id)
+  else sessions.set(id, value)
+  renderSessionsList()
+  if (id === currentSessionId) action === "removed" ? (location.hash = "") : renderPollHeader()
+})
+
+const deletePoll = async (sessionId, name) => {
+  if (!confirm(`Delete the poll "${name}"? This cannot be undone.`)) return
   try {
-    const sessionNode = await db.get(currentSessionId);
-    if (!sessionNode || !sessionNode.result || sessionNode.result.value.status !== "active" || sessionNode.result.value.endTime <= Date.now()) {
-      setStatus(votingStatus, "This poll has closed.", "info");
-      await updateProposalsUI(currentSessionId); return;
-    }
-    const proposalNode = await db.get(proposalId);
-    if (proposalNode && proposalNode.result) {
-      const updated = { ...proposalNode.result.value, votes: (proposalNode.result.value.votes || 0) + 1 };
-      await db.put(updated, proposalId);
-      localStorage.setItem(storageKey, proposalId);
-      await updateProposalsUI(currentSessionId);
-    }
-  } catch (e) {
-    setStatus(votingStatus, `Error processing your vote: ${e.message}`, "error");
-    if (buttonElement) {
-      if (!localStorage.getItem(storageKey)) {
-        const sNode = await db.get(currentSessionId).catch(() => null);
-        if (sNode && sNode.result && sNode.result.value.status === 'active' && sNode.result.value.endTime > Date.now()) {
-          buttonElement.disabled = false;
-        }
-      }
-    }
+    await db.sm.executeWithPermission("delete")
+    const { results: proposals } = await db.map({ query: { type: "proposal", sessionId }, realtime: false })
+    const { results: votes } = await db.map({ query: { type: "vote", sessionId }, realtime: false })
+    await Promise.all([...proposals, ...votes].map((n) => db.remove(n.id)))
+    await db.remove(sessionId)
+    toast(`Poll "${name}" deleted`)
+  } catch (err) {
+    toast(err.message, true)
   }
 }
 
-// Start main countdown for poll
-const startMainCountdown = (endTime, sessionId) => {
-  const mainCountdownId = `main-cd-${sessionId}`;
-  if (countdownIntervals[mainCountdownId]) clearInterval(countdownIntervals[mainCountdownId]);
-  function update() {
-    if (!countdownDisplay || !document.body.contains(countdownDisplay)) { clearInterval(countdownIntervals[mainCountdownId]); delete countdownIntervals[mainCountdownId]; return; }
-    const timeLeft = endTime - Date.now();
-    if (timeLeft <= 0) {
-      clearInterval(countdownIntervals[mainCountdownId]); delete countdownIntervals[mainCountdownId];
-      if (countdownDisplay) countdownDisplay.textContent = "Poll has ended.";
-      db.get(sessionId).then(sNode => {
-        if (sNode && sNode.result && sNode.result.value.status === 'active') {
-          db.put({ ...sNode.result.value, status: 'ended' }, sessionId).catch(err => console.warn("Err ending session (main countdown):", err));
-        }
-      }).catch(err => console.warn("Err get session (main countdown):", err));
-      return;
-    }
-    const d = Math.floor(timeLeft / (1000 * 60 * 60 * 24)), h = Math.floor(timeLeft / (1000 * 60 * 60) % 24), m = Math.floor(timeLeft / 60000 % 60), s = Math.floor(timeLeft / 1000 % 60);
-    if (countdownDisplay) countdownDisplay.textContent = `Time remaining: ${d}d ${h}h ${m}m ${s}s`;
+// ========================= Poll view (voting & tally) ======================
+// Tallies are a COUNT over vote nodes — one node per voter per session, with
+// the deterministic id `vote:<sessionId>:<address>`. Re-voting overwrites
+// your own node (allowed while the poll is open); counters can't lose votes.
+
+let currentSessionId = null
+let unsubProposals = null
+let unsubVotes = null
+let proposals = new Map() // id → proposal value
+let votes = new Map() // voter address → proposalId
+
+const voteId = (sessionId, address) => `vote:${sessionId}:${address}`
+
+const renderPollHeader = () => {
+  const s = sessions.get(currentSessionId)
+  if (!s) return
+  $("pollTitle").textContent = s.name
+  $("pollMeta").textContent = `by ${s.owner ? db.sm.abbrAddr(s.owner) : "unknown"} · closes ${new Date(s.endTime).toLocaleString()}`
+  tick("cd-main", $("countdown"), s.endTime, "Time remaining: ")
+}
+
+const renderPoll = () => {
+  if (!currentSessionId) return
+  const s = sessions.get(currentSessionId)
+  if (!s) return
+  const open = isOpen(s)
+  const myVote = myAddress ? votes.get(myAddress) : null
+
+  // tally: count votes per proposal
+  const tally = {}
+  for (const proposalId of votes.values()) tally[proposalId] = (tally[proposalId] ?? 0) + 1
+  const totalVotes = votes.size
+  const maxVotes = Math.max(0, ...Object.values(tally))
+
+  const list = $("proposalsList")
+  list.innerHTML = ""
+  const ordered = [...proposals.entries()].sort((a, b) => a[1].originalIndex - b[1].originalIndex)
+  if (!ordered.length) {
+    list.innerHTML = '<p class="empty-hint">No proposals in this poll.</p>'
+    return
   }
-  update(); countdownIntervals[mainCountdownId] = setInterval(update, 1000);
-}
 
-// Display winner(s) of the poll
-const displayWinner = (proposals) => {
-  if (!winnerMessageDiv) return;
-  winnerMessageDiv.classList.remove("hidden");
-  if (!proposals || proposals.length === 0) { winnerMessageDiv.textContent = "Poll ended. No proposals or votes."; return; }
-  let maxVotes = -1;
-  proposals.forEach(p => { if (p && p.value && (p.value.votes || 0) > maxVotes) maxVotes = p.value.votes; });
-  if (maxVotes <= 0) { winnerMessageDiv.textContent = "Poll ended. No valid votes recorded."; return; }
-  const winners = proposals.filter(p => p && p.value && (p.value.votes || 0) === maxVotes);
-  if (winners.length === 1) winnerMessageDiv.textContent = `🏆 WINNER: "${winners[0].value.title}" (${maxVotes} votes).`;
-  else winnerMessageDiv.textContent = `🏆 TIE! (${maxVotes} votes): ${winners.map(w => `"${w.value.title}"`).join(', ')}.`;
-}
+  for (const [pid, p] of ordered) {
+    const count = tally[pid] ?? 0
+    const pct = totalVotes ? Math.round((count / totalVotes) * 100) : 0
+    const row = document.createElement("div")
+    row.className = "proposal" + (myVote === pid ? " mine" : "")
+    row.innerHTML = `
+      <div class="proposal-head">
+        <h3>${esc(p.title)}</h3>
+        <span class="proposal-count mono">${count} vote${count === 1 ? "" : "s"} · ${pct}%</span>
+      </div>
+      <div class="tally-track"><div class="tally-fill" style="width:${pct}%"></div></div>
+      ${open ? `<button class="vote-btn" ${!can("write") ? "disabled" : ""}>${myVote === pid ? "Your vote ✓ " : myVote ? "Change vote to this" : "Vote"}</button>` : ""}`
+    row.querySelector(".vote-btn")?.addEventListener("click", () => castVote(pid))
+    list.appendChild(row)
+  }
 
-// Initialize app routing based on hash
-const initializeAppRouting = () => {
-  const hash = window.location.hash.substring(1);
-  Object.values(countdownIntervals).forEach(clearInterval);
-  for (const key in countdownIntervals) delete countdownIntervals[key];
-  if (sessionsListenerUnsubscribe) { sessionsListenerUnsubscribe(); sessionsListenerUnsubscribe = null; }
-
-  db.map(
-    { query: { type: "votingSession" }, field: "createdAt", order: "desc", realtime: true },
-    (event) => {
-      renderActiveVotingsList();
-      // If the current session is the one that changed, AND it wasn't a 'removed' event (handled by delete func)
-      if (currentSessionId && event.id === currentSessionId && event.action !== 'removed') {
-        loadVotingSession(currentSessionId); // Reload to reflect potential external changes (e.g. name edit by another peer)
-      }
-    }
-  ).then(handler => { if (handler && typeof handler.unsubscribe === 'function') sessionsListenerUnsubscribe = handler.unsubscribe; })
-    .catch(err => { console.error("Error subscribing to sessions:", err); });
-
-  if (hash) {
-    if (creatorView) creatorView.classList.add("hidden");
-    if (votingView) votingView.classList.remove("hidden");
-    loadVotingSession(hash);
+  // winner banner for closed polls
+  const banner = $("winnerBanner")
+  if (!open && totalVotes > 0) {
+    const winners = ordered.filter(([pid]) => (tally[pid] ?? 0) === maxVotes)
+    banner.textContent = winners.length === 1
+      ? `🏆 WINNER: "${winners[0][1].title}" (${maxVotes} vote${maxVotes === 1 ? "" : "s"})`
+      : `🏆 TIE (${maxVotes} votes): ${winners.map(([, w]) => `"${w.title}"`).join(", ")}`
+    banner.style.display = "block"
+  } else if (!open) {
+    banner.textContent = "Poll ended — no votes were cast."
+    banner.style.display = "block"
   } else {
-    if (votingView) votingView.classList.add("hidden");
-    if (creatorView) creatorView.classList.remove("hidden");
-    currentSessionId = null;
-    resetCreatorForm();
+    banner.style.display = "none"
+  }
+
+  // voting hint for guests
+  $("guestVoteHint").style.display = open && myAddress && !can("write") ? "block" : "none"
+  $("signinVoteHint").style.display = open && !myAddress ? "block" : "none"
+}
+
+const castVote = async (proposalId) => {
+  const s = sessions.get(currentSessionId)
+  if (!s || !isOpen(s)) return toast("This poll has closed", true)
+  try {
+    await db.sm.executeWithPermission("write") // the right to vote is earned
+    // Deterministic id: one vote node per identity per poll. Voting again
+    // overwrites — the tally can never double-count an identity.
+    await db.sm.acls.set(
+      { type: "vote", sessionId: currentSessionId, proposalId, voter: myAddress, at: Date.now() },
+      voteId(currentSessionId, myAddress),
+    )
+    toast(votes.get(myAddress) ? "Vote changed" : "Vote cast")
+  } catch (err) {
+    toast(err.message, true)
   }
 }
 
-window.addEventListener('hashchange', initializeAppRouting);
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initializeAppRouting);
-else initializeAppRouting();
+const openPoll = async (sessionId) => {
+  currentSessionId = sessionId
+  unsubProposals?.(); unsubVotes?.()
+  proposals = new Map(); votes = new Map()
+  $("creatorSection").style.display = "none"
+  $("pollSection").style.display = "block"
+  renderSessionsList() // highlight selection
+
+  const { result } = await db.get(sessionId)
+  if (!result || result.value?.type !== "votingSession") {
+    toast("Poll not found", true)
+    location.hash = ""
+    return
+  }
+  sessions.set(sessionId, result.value)
+  renderPollHeader()
+
+  // Live proposals + live votes → every peer's tally updates in real time.
+  ;({ unsubscribe: unsubProposals } = await db.map(
+    { query: { type: "proposal", sessionId } },
+    ({ id, value, action }) => {
+      action === "removed" ? proposals.delete(id) : proposals.set(id, value)
+      renderPoll()
+    },
+  ))
+  ;({ unsubscribe: unsubVotes } = await db.map(
+    { query: { type: "vote", sessionId } },
+    ({ value, action }) => {
+      if (action === "removed") votes.delete(value?.voter)
+      else if (value?.voter) votes.set(value.voter, value.proposalId)
+      renderPoll()
+    },
+  ))
+}
+
+// ================================ Routing ==================================
+
+const showCreator = () => {
+  currentSessionId = null
+  unsubProposals?.(); unsubVotes?.()
+  $("pollSection").style.display = "none"
+  $("creatorSection").style.display = "block"
+  renderSessionsList()
+  resetCreatorForm()
+}
+
+const route = () => {
+  const hash = location.hash.slice(1)
+  hash ? openPoll(hash) : showCreator()
+}
+
+$("newPollBtn").onclick = () => { location.hash = "" ; showCreator() }
+addEventListener("hashchange", route)
+addEventListener("beforeunload", () => db.room?.leave?.()) // real unload only — never pagehide
+
+// ================================= Boot ====================================
+
+applyPermissionsToUI()
+renderDraftProposals()
+setDefaultEndTime()
+route()
