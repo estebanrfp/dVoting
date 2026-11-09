@@ -254,6 +254,8 @@ const tick = (key, el, endTime, prefix = "") => {
 }
 
 let sessions = new Map() // id → session value (fed by the live subscription)
+// Declared before the subscription on purpose: GenosDB hands it the stored polls at once, and the list reads this.
+let currentSessionId = null
 
 const renderSessionsList = () => {
   const list = $("activePollsList")
@@ -307,7 +309,6 @@ const deletePoll = async (sessionId, name) => {
 // the deterministic id `vote:<sessionId>:<address>`. Re-voting overwrites
 // your own node (allowed while the poll is open); counters can't lose votes.
 
-let currentSessionId = null
 let unsubProposals = null
 let unsubVotes = null
 let proposals = new Map() // id → proposal value
